@@ -26,7 +26,7 @@ def get_supabase():
 try:
     supabase = get_supabase()
 except Exception as error:
-    st.error("Database connection failed. Check Streamlit Secrets.")
+    st.error(f"Database connection failed:{error}")
     st.stop()
 
 
