@@ -1,6 +1,8 @@
 import streamlit as st
 import csv
+import io
 from pathlib import Path
+from supabase import create_client
 
 # Project file paths
 BASE_PATH = Path(__file__).resolve().parent
@@ -12,6 +14,20 @@ st.set_page_config(
     page_icon="🎓",
     layout="wide"
 )
+
+# Connect to Supabase
+@st.cache_resource
+def get_supabase():
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"]
+    )
+
+try:
+    supabase = get_supabase()
+except Exception as error:
+    st.error("Database connection failed. Check Streamlit Secrets.")
+    st.stop()
 
 
 # Train Linear Regression Model
@@ -28,7 +44,6 @@ def train_model(file_modified):
     Y = []
 
     for student in students:
-
         row = [
             float(student["attendance"]),
             float(student["previous_marks"]),
@@ -50,16 +65,10 @@ def train_model(file_modified):
         X.append(row)
         Y.append(target / 100)
 
-    minimum = [
-        min(row[i] for row in X) for i in range(4)
-    ]
-
-    maximum = [
-        max(row[i] for row in X) for i in range(4)
-    ]
+    minimum = [min(row[i] for row in X) for i in range(4)]
+    maximum = [max(row[i] for row in X) for i in range(4)]
 
     def normalize(row):
-
         return [
             (row[i] - minimum[i]) / (maximum[i] - minimum[i])
             if maximum[i] != minimum[i] else 0
@@ -76,12 +85,10 @@ def train_model(file_modified):
     n = len(X_scaled)
 
     for epoch in range(epochs):
-
         dw = [0.0] * 4
         db = 0.0
 
         for x, y in zip(X_scaled, Y):
-
             prediction = sum(
                 weights[i] * x[i] for i in range(4)
             ) + bias
@@ -153,7 +160,6 @@ def classify_risk(predicted, attendance, cie, assignment):
         or assignment < 6
         or predicted < 60
     ):
-
         if attendance < 75:
             reasons.append("Attendance needs improvement")
 
@@ -173,6 +179,19 @@ def classify_risk(predicted, attendance, cie, assignment):
     ]
 
 
+# Read all records from Supabase
+def get_records():
+
+    response = (
+        supabase.table("student_records")
+        .select("*")
+        .order("created_at", desc=True)
+        .execute()
+    )
+
+    return response.data or []
+
+
 # Website Heading
 st.title("🎓 Academic Performance Prediction System")
 
@@ -186,7 +205,6 @@ st.info("Machine Learning Algorithm: Linear Regression")
 
 # Train Model
 try:
-
     if not DATASET_FILE.exists():
         raise FileNotFoundError("Student dataset not found.")
 
@@ -195,7 +213,6 @@ try:
     st.success("Machine Learning Model Trained Successfully!")
 
 except Exception as error:
-
     st.error("Unable to train model: " + str(error))
     st.stop()
 
@@ -211,7 +228,6 @@ name = st.text_input("Student Name")
 col1, col2 = st.columns(2)
 
 with col1:
-
     attendance = st.number_input(
         "Attendance (%)",
         min_value=0.0,
@@ -227,7 +243,6 @@ with col1:
     )
 
 with col2:
-
     cie_marks = st.number_input(
         "CIE Marks (out of 50)",
         min_value=0.0,
@@ -247,11 +262,9 @@ with col2:
 if st.button("Predict Marks"):
 
     if not name.strip():
-
         st.warning("Please enter student name.")
 
     else:
-
         predicted_marks = predict_marks(
             attendance,
             previous_marks,
@@ -279,10 +292,8 @@ if st.button("Predict Marks"):
 
         if risk == "High Risk":
             st.error("🔴 High Risk")
-
         elif risk == "Medium Risk":
             st.warning("🟡 Medium Risk")
-
         else:
             st.success("🟢 Low Risk")
 
@@ -296,235 +307,204 @@ if st.button("Predict Marks"):
             "and provide academic support according to individual needs."
         )
 
-        # Save Student Record
+        # Save record permanently in Supabase
         try:
+            student_record = {
+                "student_name": name.strip(),
+                "attendance": attendance,
+                "previous_marks": previous_marks,
+                "cie_marks": cie_marks,
+                "assignment_marks": assignment_marks,
+                "predicted_marks": round(predicted_marks, 2),
+                "risk_category": risk,
+                "warning_information": "; ".join(reasons)
+            }
 
+            supabase.table("student_records").insert(
+                student_record
+            ).execute()
+
+            st.success("Student record saved permanently in database!")
+
+        except Exception as error:
+            st.error("Unable to save student record: " + str(error))
+
+
+# Faculty Dashboard
+st.divider()
+st.header("📊 Faculty Academic Risk Dashboard")
+
+try:
+    records = get_records()
+
+    if records:
+
+        total = len(records)
+
+        high = sum(
+            1 for r in records
+            if r["risk_category"] == "High Risk"
+        )
+
+        medium = sum(
+            1 for r in records
+            if r["risk_category"] == "Medium Risk"
+        )
+
+        low = sum(
+            1 for r in records
+            if r["risk_category"] == "Low Risk"
+        )
+
+        # Dashboard Summary
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Total Students", total)
+        c2.metric("High Risk", high)
+        c3.metric("Medium Risk", medium)
+        c4.metric("Low Risk", low)
+
+        # Risk Distribution
+        st.subheader("Academic Risk Distribution")
+
+        st.write("🔴 High Risk:", high, "students")
+        st.progress(high / total)
+
+        st.write("🟡 Medium Risk:", medium, "students")
+        st.progress(medium / total)
+
+        st.write("🟢 Low Risk:", low, "students")
+        st.progress(low / total)
+
+        # Faculty Early Warning
+        st.subheader("🚨 Faculty Early Warning List")
+
+        warning_records = [
+            r for r in records
+            if r["risk_category"] in [
+                "High Risk", "Medium Risk"
+            ]
+        ]
+
+        if warning_records:
+            for index, record in enumerate(warning_records, 1):
+
+                with st.expander(
+                    f"{index}. {record['student_name']} - "
+                    f"{record['risk_category']}"
+                ):
+
+                    st.write("Predicted Marks:", record["predicted_marks"])
+                    st.write("Attendance:", record["attendance"], "%")
+                    st.write("Previous Marks:", record["previous_marks"])
+                    st.write("CIE Marks:", record["cie_marks"], "/50")
+                    st.write(
+                        "Assignment Marks:",
+                        record["assignment_marks"], "/10"
+                    )
+                    st.write(
+                        "Warning:",
+                        record["warning_information"]
+                    )
+
+                    st.write(
+                        "**Suggested Faculty Action:** "
+                        "Provide academic guidance, monitor progress "
+                        "and arrange additional support."
+                    )
+        else:
+            st.success(
+                "No students currently require additional monitoring."
+            )
+
+        # All Student Records
+        st.subheader("📚 All Student Records")
+
+        for index, record in enumerate(records, 1):
+
+            with st.expander(
+                f"Student {index}: {record['student_name']}"
+            ):
+
+                st.write("Attendance:", record["attendance"], "%")
+                st.write("Previous Marks:", record["previous_marks"])
+                st.write("CIE Marks:", record["cie_marks"], "/50")
+                st.write(
+                    "Assignment Marks:",
+                    record["assignment_marks"], "/10"
+                )
+                st.write("Predicted Marks:", record["predicted_marks"])
+                st.write("Risk Category:", record["risk_category"])
+                st.write(
+                    "Warning:",
+                    record["warning_information"]
+                )
+
+        # CSV Export
+        st.subheader("📥 Download Student Records")
+
+        csv_buffer = io.StringIO()
+
+        fieldnames = [
+            "Student Name",
+            "Attendance",
+            "Previous Marks",
+            "CIE Marks",
+            "Assignment Marks",
+            "Predicted Marks",
+            "Risk Category",
+            "Warning Information"
+        ]
+
+        writer = csv.DictWriter(
+            csv_buffer,
+            fieldnames=fieldnames
+        )
+
+        writer.writeheader()
+
+        for record in records:
+            writer.writerow({
+                "Student Name": record["student_name"],
+                "Attendance": record["attendance"],
+                "Previous Marks": record["previous_marks"],
+                "CIE Marks": record["cie_marks"],
+                "Assignment Marks": record["assignment_marks"],
+                "Predicted Marks": record["predicted_marks"],
+                "Risk Category": record["risk_category"],
+                "Warning Information": record["warning_information"]
+            })
+
+        csv_data = csv_buffer.getvalue()
+
+        st.download_button(
+            label="Download CSV File",
+            data=csv_data,
+            file_name="prediction_results_updated.csv",
+            mime="text/csv"
+        )
+
+        # Save a local CSV copy when running locally
+        try:
             RESULT_FILE.parent.mkdir(
                 parents=True,
                 exist_ok=True
             )
 
-            file_exists = RESULT_FILE.exists()
-
             with open(
                 RESULT_FILE,
-                "a",
+                "w",
                 newline="",
                 encoding="utf-8"
             ) as file:
 
-                writer = csv.writer(file)
+                file.write(csv_data)
 
-                if (
-                    not file_exists
-                    or RESULT_FILE.stat().st_size == 0
-                ):
-
-                    writer.writerow([
-                        "Student Name",
-                        "Attendance",
-                        "Previous Marks",
-                        "CIE Marks",
-                        "Assignment Marks",
-                        "Predicted Marks",
-                        "Risk Category",
-                        "Warning Information"
-                    ])
-
-                writer.writerow([
-                    name.strip(),
-                    attendance,
-                    previous_marks,
-                    cie_marks,
-                    assignment_marks,
-                    round(predicted_marks, 2),
-                    risk,
-                    "; ".join(reasons)
-                ])
-
-            st.success("Student record saved successfully!")
-
-        except OSError as error:
-
-            st.error("Unable to save record: " + str(error))
-
-
-# Faculty Dashboard
-st.divider()
-
-st.header("📊 Faculty Academic Risk Dashboard")
-
-try:
-
-    if (
-        RESULT_FILE.exists()
-        and RESULT_FILE.stat().st_size > 0
-    ):
-
-        with open(
-            RESULT_FILE,
-            "r",
-            newline="",
-            encoding="utf-8"
-        ) as file:
-
-            records = list(csv.DictReader(file))
-
-        if records:
-
-            total = len(records)
-
-            high = sum(
-                1 for r in records
-                if r["Risk Category"] == "High Risk"
-            )
-
-            medium = sum(
-                1 for r in records
-                if r["Risk Category"] == "Medium Risk"
-            )
-
-            low = sum(
-                1 for r in records
-                if r["Risk Category"] == "Low Risk"
-            )
-
-            # Dashboard Summary
-            c1, c2, c3, c4 = st.columns(4)
-
-            c1.metric("Total Students", total)
-            c2.metric("High Risk", high)
-            c3.metric("Medium Risk", medium)
-            c4.metric("Low Risk", low)
-
-            # Risk Distribution
-            st.subheader("Academic Risk Distribution")
-
-            st.write("🔴 High Risk:", high, "students")
-            st.progress(high / total)
-
-            st.write("🟡 Medium Risk:", medium, "students")
-            st.progress(medium / total)
-
-            st.write("🟢 Low Risk:", low, "students")
-            st.progress(low / total)
-
-            # Faculty Early Warning
-            st.subheader("🚨 Faculty Early Warning List")
-
-            warning_records = [
-                r for r in records
-                if r["Risk Category"] in [
-                    "High Risk",
-                    "Medium Risk"
-                ]
-            ]
-
-            if warning_records:
-
-                for index, record in enumerate(
-                    warning_records, 1
-                ):
-
-                    with st.expander(
-                        f"{index}. {record['Student Name']} - "
-                        f"{record['Risk Category']}"
-                    ):
-
-                        st.write(
-                            "Predicted Marks:",
-                            record["Predicted Marks"]
-                        )
-
-                        st.write(
-                            "Attendance:",
-                            record["Attendance"], "%"
-                        )
-
-                        st.write(
-                            "Previous Marks:",
-                            record["Previous Marks"]
-                        )
-
-                        st.write(
-                            "CIE Marks:",
-                            record["CIE Marks"], "/50"
-                        )
-
-                        st.write(
-                            "Assignment Marks:",
-                            record["Assignment Marks"], "/10"
-                        )
-
-                        st.write(
-                            "Warning:",
-                            record["Warning Information"]
-                        )
-
-                        st.write(
-                            "**Suggested Faculty Action:** "
-                            "Provide academic guidance, monitor progress "
-                            "and arrange additional support."
-                        )
-
-            else:
-
-                st.success(
-                    "No students currently require additional monitoring."
-                )
-
-            # All Student Records
-            st.subheader("📚 All Student Records")
-
-            for index, record in enumerate(records, 1):
-
-                with st.expander(
-                    f"Student {index}: {record['Student Name']}"
-                ):
-
-                    st.write("Attendance:", record["Attendance"], "%")
-
-                    st.write(
-                        "Previous Marks:",
-                        record["Previous Marks"]
-                    )
-
-                    st.write(
-                        "CIE Marks:",
-                        record["CIE Marks"], "/50"
-                    )
-
-                    st.write(
-                        "Assignment Marks:",
-                        record["Assignment Marks"], "/10"
-                    )
-
-                    st.write(
-                        "Predicted Marks:",
-                        record["Predicted Marks"]
-                    )
-
-                    st.write(
-                        "Risk Category:",
-                        record["Risk Category"]
-                    )
-
-                    st.write(
-                        "Warning:",
-                        record["Warning Information"]
-                    )
-
-        else:
-
-            st.info("No student records available yet.")
+        except OSError:
+            pass
 
     else:
+        st.info("No student predictions available. Add student details first.")
 
-        st.info(
-            "No student predictions available. "
-            "Add student details first."
-        )
-
-except (OSError, csv.Error, ValueError, KeyError) as error:
-
-    st.error("Unable to display records: " + str(error))
+except Exception as error:
+    st.error("Unable to load student records: " + str(error))
